@@ -5,7 +5,7 @@ Tento priečinok obsahuje skripty, ktoré sa spúšťajú mimo Enterprise Archit
 Odporúčaný priečinok: C:\EA-Skripty\
 Klon repozitára:
 cd C:\EA-Skripty
-git clone https://github.com/<organizacia>/Enterprise-Architect-scripts.git
+git clone https://github.com/NASES-Slovakia/Enterprise-Architect-scripts.git
 Štruktúra:
 C:\EA-Skripty\Enterprise-Architect-scripts\external\
 C:\EA-Skripty\Enterprise-Architect-scripts\ea-scripts\
