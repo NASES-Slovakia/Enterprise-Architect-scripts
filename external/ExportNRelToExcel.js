@@ -1,5 +1,5 @@
 // ============================================
-// Export N_RelationID väzieb z aktuálneho balíka v EA do Excelu
+// Export N_RelationID väzieb z AKTUALNEHO DIAGRAMU v EA do Excelu
 // Spúšťa sa mimo EA cez:  cscript //nologo ExportNRelToExcel.js
 // Musí bežať Enterprise Architect a musí byť otvorený model.
 // ============================================
@@ -24,22 +24,43 @@ var META_COL_L = 5;
 var META_COL_V = 6;
 var PROTECTED_COLOR = 22;   // svetlocervena pre bunky, ktore sa nemaju menit
 var UNKNOWN_COLOR   = 36;   // zlta pre riadky bez detailneho harka
+
+// POISTKA: potvrdenie pred exportom aktualneho diagramu (Y/N)
+var CONFIRM_DIAGRAM_BEFORE_EXPORT = true;
+
 // ======================
 
 // ---- logovanie ----
-function log(msg){ 
-    try{ WScript.Echo(msg); }catch(e){} 
+function log(msg){
+    try{ WScript.Echo(msg); }catch(e){}
+}
+
+// ---- konzolovy input helper ----
+function readLineSafe(prompt){
+  try{
+    if (prompt) WScript.StdOut.Write(prompt);
+    return WScript.StdIn.ReadLine();
+  } catch(e){
+    return null;
+  }
+}
+
+function askYesNo(prompt){
+  var ans = readLineSafe(prompt);
+  if (ans === null) return false;
+  ans = (""+ans).replace(/^\s+|\s+$/g,"").toLowerCase();
+  return (ans==="y" || ans==="yes" || ans==="a" || ans==="ano");
 }
 
 // ---- XML helpery ----
 function createXmlDoc() {
   var v=["MSXML2.DOMDocument.6.0","MSXML2.DOMDocument.4.0","MSXML2.DOMDocument.3.0","MSXML2.DOMDocument"];
-  for (var i=0;i<v.length;i++){ 
-      try { 
-          var x=new ActiveXObject(v[i]); 
-          x.async=false; 
-          return x; 
-      } catch(e){} 
+  for (var i=0;i<v.length;i++){
+      try {
+          var x=new ActiveXObject(v[i]);
+          x.async=false;
+          return x;
+      } catch(e){}
   }
   return null;
 }
@@ -114,8 +135,7 @@ function pickExcelPathInteractive(initialFolder){
 
   // Fallback – manualne zadanie cez konzolu (cscript)
   try {
-    WScript.StdOut.Write("Zadaj nazov existujuceho alebo noveho suboru (.xlsx) alebo nechaj prazdne pre zrusenie: ");
-    var name = WScript.StdIn.ReadLine();
+    var name = readLineSafe("Zadaj nazov existujuceho alebo noveho suboru (.xlsx) alebo nechaj prazdne pre zrusenie: ");
     if (!name) return "";
     name = ensureXlsxName(name);
     var full = initialFolder + "\\" + name;
@@ -127,13 +147,24 @@ function pickExcelPathInteractive(initialFolder){
   }
 }
 
-// ---- EA helpery ----
-function collectPackageIds(pkg, arr) {
-  if (!pkg) return;
-  arr.push(pkg.PackageID);
-  for (var i=0;i<pkg.Packages.Count;i++) collectPackageIds(pkg.Packages.GetAt(i), arr);
+// ---- Diagram helpery ----
+function getActiveDiagramSafe(){
+  // Ak by si to niekedy spustal z kontextu diagramu, skusime najprv context
+  try {
+    if (Repository.GetContextItemType && Repository.GetContextItemType() == otDiagram) {
+      return Repository.GetContextObject();
+    }
+  } catch(e) {}
+
+  // Fallback: aktualne otvoreny diagram
+  try {
+    return Repository.GetCurrentDiagram();
+  } catch(e2) {
+    return null;
+  }
 }
 
+// ---- Excel helpery ----
 function safeSheetName(s, fallback, idx){
   if (!s || s=="") s = fallback + "_" + idx;
   s = s.replace(/[\\\/:\*\?\[\]]/g,"_");
@@ -306,7 +337,7 @@ function findOrCreateRowByLabel(ws,label){
     var v=ws.Cells(r,1).Value;
     if (v && (""+v).toLowerCase()==(""+label).toLowerCase()) return r;
     if (!v && ws.Cells(r,2).Value==null && ws.Cells(r,3).Value==null){
-      ws.Cells(r,1).Value=label; 
+      ws.Cells(r,1).Value=label;
       return r;
     }
   }
@@ -319,11 +350,22 @@ function findOrCreateRowByLabel(ws,label){
 function main(){
   log("== EA -> Excel export start ==");
 
-  var sel=Repository.GetTreeSelectedPackage();
-  if(!sel){ log("[ERR] Vyber balik v Project Browseri."); return; }
+  var dgm = getActiveDiagramSafe();
+  if(!dgm){
+    log("[ERR] Otvor diagram v EA a spusti znova.");
+    return;
+  }
 
-  var ids=[]; collectPackageIds(sel,ids);
-  if(ids.length==0){ log("[ERR] Vetva balika je prazdna."); return; }
+  log("[OK] Diagram: " + dgm.Name + " (ID=" + dgm.DiagramID + ")");
+
+  if (CONFIRM_DIAGRAM_BEFORE_EXPORT){
+    log("[INFO] Potvrdenie: exportuje sa iba aktualne otvoreny diagram (nie cely balik).");
+    var ok = askYesNo("Pokracovat s exportom tohto diagramu? (Y/N): ");
+    if (!ok){
+      log("[ERR] Zrusene uzivatelom.");
+      return;
+    }
+  }
 
   var sql="SELECT "+
     "d.Name AS DiagramName, pd.Name AS DiagramPackage, c.Connector_ID, c.ea_guid AS ConnectorGUID, "+
@@ -342,11 +384,11 @@ function main(){
     "LEFT JOIN t_connectortag ort ON ort.elementid=c.Connector_ID AND lower(ort.property)='originalname' "+
     "LEFT JOIN (SELECT lower(value) AS relid, COUNT(*) AS DuplicateCount FROM t_connectortag "+
     "           WHERE lower(property)='n_relationid' GROUP BY lower(value)) dup ON dup.relid=lower(nrt.value) "+
-    "WHERE pd.Package_ID IN ("+ids.join(",")+") "+
+    "WHERE dl.DiagramID = " + dgm.DiagramID + " "+
     "  AND dl.Hidden = 0 "+
-    "ORDER BY dup.DuplicateCount DESC, pd.Name, d.Name, c.Connector_ID;";
+    "ORDER BY dup.DuplicateCount DESC, d.Name, c.Connector_ID;";
 
-  var folder=pickFolder(); 
+  var folder=pickFolder();
   if(!folder){ log("[ERR] Zrusene (priecinok)."); return; }
   log("[OK] Zvoleny priecinok: " + folder);
 
@@ -355,10 +397,10 @@ function main(){
   if(!/\.xlsx$/i.test(path)) path = ensureXlsxName(path);
   log("[OK] Cielovy subor: " + path);
 
-  var xmlRaw=Repository.SQLQuery(sql); 
+  var xmlRaw=Repository.SQLQuery(sql);
   if(!xmlRaw||xmlRaw==""){ log("[ERR] SQL prazdny vysledok."); return; }
 
-  var doc=createXmlDoc(); 
+  var doc=createXmlDoc();
   if(!doc){ log("[ERR] MSXML nie je dostupny."); return; }
 
   if(!doc.loadXML(sanitizeXml(xmlRaw))){
@@ -370,8 +412,8 @@ function main(){
     return;
   }
 
-  var rows=doc.getElementsByTagName("Row"); 
-  if(rows.length==0){ log("[INFO] Ziadne data (vo vetve nie su viditelne konektory)."); return; }
+  var rows=doc.getElementsByTagName("Row");
+  if(rows.length==0){ log("[INFO] Ziadne data (na diagrame nie su viditelne konektory)."); return; }
   log("[OK] Nacitane riadky: " + rows.length);
 
   var first=rows.item(0), colCount=first.childNodes.length;
@@ -388,7 +430,7 @@ function main(){
   } else {
     log("* Vytvaram novy XLSX...");
     wb=excel.Workbooks.Add();
-    wsMain=wb.Worksheets(1); 
+    wsMain=wb.Worksheets(1);
     wsMain.Name=MAIN_SHEET;
     for(var c=0;c<colCount;c++){
       wsMain.Cells(1,c+1).Value=first.childNodes.item(c).nodeName;
@@ -438,7 +480,7 @@ function main(){
   var nextRow=(lastRowMain>=2? lastRowMain+1 : 2);
 
   var keepSheets={};
-  var oldAlerts=excel.DisplayAlerts; 
+  var oldAlerts=excel.DisplayAlerts;
   excel.DisplayAlerts=false;
 
   for(var r=0;r<rows.length;r++){
@@ -563,7 +605,7 @@ function main(){
   if(OPEN_AFTER_SAVE){
     excel.Visible=true;
   } else {
-    wb.Close(false); 
+    wb.Close(false);
     excel.Quit();
   }
 
